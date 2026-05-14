@@ -1,0 +1,8 @@
+streamlit
+pandas
+plotly
+langchain-groq
+python-dotenv
+psycopg2-binary
+google-generativeai
+supabase
