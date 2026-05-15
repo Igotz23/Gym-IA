@@ -4,152 +4,250 @@ from supabase import create_client, Client
 import os
 from dotenv import load_dotenv
 from datetime import datetime
-import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from groq import Groq  # <-- IMPORTANTE: Librería de Groq añadida
+from groq import Groq
+import google.generativeai as genai
 
 # 1. Configuración Inicial
 load_dotenv()
 supabase: Client = create_client(os.getenv("SUPABASE_URL"), os.getenv("SUPABASE_KEY"))
-
-# 2. Inicializar Cliente de Groq (Llama 3)
-# Esta línea faltaba y por eso daba el error de 'client not defined'
 client = Groq(api_key=os.getenv("GROQ_API_KEY"))
 
-st.set_page_config(page_title="Gym IA - Pro & AI", layout="wide")
+st.set_page_config(page_title="Gym Performance Tracker", layout="wide")
+
+# Estilo minimalista para evitar distracciones
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; }
+    .stTabs [data-baseweb="tab-list"] { gap: 24px; }
+    .stTabs [data-baseweb="tab"] { height: 50px; white-space: pre-wrap; font-weight: 600; }
+    div.stButton > button:first-child { border-radius: 5px; border: 1px solid #3e444b; background-color: #1f2937; }
+    </style>
+    """, unsafe_allow_html=True)
 
 # --- FUNCIONES DE APOYO ---
 def obtener_ultimo_entreno(grupo_muscular):
     try:
-        response = supabase.table("registros_gym").select("*").eq("grupo_muscular", grupo_muscular).order("fecha", desc=True).limit(20).execute()
+        response = supabase.table("registros_gym").select("*").eq("grupo_muscular", grupo_muscular).order("fecha", desc=True).limit(15).execute()
         if response.data:
             df = pd.DataFrame(response.data)
             ultima_fecha = df['fecha'].max()
             ultimos = df[df['fecha'] == ultima_fecha]
-            return [{"nombre": f['ejercicio'], "series": f['datos_series']} for _, f in ultimos.iterrows()]
+            return [{"nombre": f['ejercicio'].upper(), "series": f['datos_series']} for _, f in ultimos.iterrows()]
     except: pass
     return []
 
 def calcular_1rm_func(peso, reps):
     if reps <= 0: return 0
-    if reps == 1: return peso
-    return peso / (1.0278 - (0.0278 * reps))
+    return peso / (1.0278 - (0.0278 * reps)) if reps > 1 else peso
 
 def generar_respuesta_llama(prompt):
     try:
-        # Llamada al motor de Llama 3 en Groq
         chat_completion = client.chat.completions.create(
             messages=[{"role": "user", "content": prompt}],
             model="llama-3.1-8b-instant",
         )
         return chat_completion.choices[0].message.content
     except Exception as e:
-        return f"Error con Llama: {e}"
+        return f"Error de conexión: {e}"
+    
+def analizar_plato_gemini(foto_archivo):
+    try:
+        # 1. Configurar el modelo de visión
+        model = genai.GenerativeModel('gemini-1.5-flash')
+        
+        # 2. Convertir la foto a bytes
+        image_data = foto_archivo.getvalue()
+        image_parts = [{"mime_type": "image/jpeg", "data": image_data}]
+
+        # 3. El "Prompt" maestro para que la IA no se enrolle
+        prompt = """
+        Analiza esta imagen de comida. Estima las cantidades y devuelve EXCLUSIVAMENTE 
+        un objeto JSON con este formato:
+        {"alimento": "nombre del plato", "calorias": 0, "proteinas": 0, "carbohidratos": 0, "grasas": 0}
+        Si hay varios alimentos, suma sus macros. No escribas nada más que el JSON.
+        """
+
+        response = model.generate_content([prompt, image_parts[0]])
+        
+        # 4. Limpiar la respuesta (Gemini a veces pone ```json ... ```)
+        texto_limpio = response.text.replace('```json', '').replace('```', '').strip()
+        return texto_limpio
+    except Exception as e:
+        return f"Error con Gemini: {e}"
 
 # --- ESTRUCTURA DE PESTAÑAS ---
-tab1, tab2, tab3, tab4 = st.tabs(["📝 Registrar", "📅 Historial", "📈 Evolución", "🤖 Coach IA"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["REGISTRAR", "HISTORIAL", "EVOLUCIÓN", "COACH IA", "MACROS"])
 
-# --- PESTAÑA 1: REGISTRO ---
+# --- PESTAÑA 1: REGISTRO (CON PERSISTENCIA) ---
 with tab1:
-    st.title("🏋️‍♂️ Nuevo Entrenamiento")
-    col_fecha, col_grupo = st.columns(2)
-    with col_fecha:
-        fecha_entreno = st.date_input("Fecha", datetime.now(), key="fecha_registro")
-    with col_grupo:
-        grupo = st.selectbox("Split", ["Espalda + Bíceps", "Pecho + Hombro + Tríceps", "Pierna", "Hombro + Tríceps + Bíceps", "Espalda + Pecho"], key="split_registro")
-
+    st.title("Registro de Sesión")
+    
+    # Inicialización de estado de sesión para evitar pérdida de datos
     if 'lista_ejercicios' not in st.session_state:
         st.session_state.lista_ejercicios = []
+    
+    if st.session_state.lista_ejercicios:
+        st.warning("Sesión en curso. Los datos se mantienen mientras la pestaña esté abierta.")
 
-    c1, c2 = st.columns(2)
-    if c1.button("🔄 Cargar últimos pesos"):
+    col_fecha, col_grupo = st.columns(2)
+    with col_fecha:
+        fecha_entreno = st.date_input("Fecha", datetime.now())
+    with col_grupo:
+        grupo = st.selectbox("Distribución Muscular", 
+                            ["Espalda + Bíceps", "Pecho + Hombro + Tríceps", "Pierna", "Hombro + Tríceps + Bíceps", "Espalda + Pecho"])
+
+    c1, c2, c3 = st.columns(3)
+    if c1.button("Importar pesos anteriores", use_container_width=True):
         st.session_state.lista_ejercicios = obtener_ultimo_entreno(grupo)
-    if c2.button("➕ Añadir Ejercicio"):
+        st.rerun()
+    
+    if c2.button("Agregar ejercicio nuevo", use_container_width=True):
         st.session_state.lista_ejercicios.append({"nombre": "", "series": [{"peso": 0.0, "repes": 0}]})
+        st.rerun()
 
+    if c3.button("Limpiar sesión actual", type="secondary", use_container_width=True):
+        st.session_state.lista_ejercicios = []
+        st.rerun()
+
+    # Renderizado de la lista de ejercicios
     for i, ej in enumerate(st.session_state.lista_ejercicios):
-        with st.expander(f"Ejercicio: {ej['nombre']}", expanded=True):
-            ej['nombre'] = st.text_input(f"Nombre", value=ej['nombre'], key=f"n_{i}")
+        with st.expander(f"EJERCICIO: {ej['nombre'] if ej['nombre'] else '...'}", expanded=True):
+            # Guardado inmediato del nombre
+            nombre_act = st.text_input("Nombre", value=ej['nombre'], key=f"n_{i}").upper().strip()
+            st.session_state.lista_ejercicios[i]['nombre'] = nombre_act
+            
             s_col1, s_col2 = st.columns(2)
-            if s_col1.button(f"➕ Serie", key=f"as_{i}"):
-                ej['series'].append({"peso": ej['series'][-1]['peso'], "repes": ej['series'][-1]['repes']})
-            if s_col2.button(f"➖ Serie", key=f"rs_{i}") and len(ej['series']) > 1:
-                ej['series'].pop()
+            if s_col1.button(f"Añadir Serie", key=f"as_{i}"):
+                st.session_state.lista_ejercicios[i]['series'].append({
+                    "peso": ej['series'][-1]['peso'], 
+                    "repes": ej['series'][-1]['repes']
+                })
+                st.rerun()
+
+            if s_col2.button(f"Quitar Serie", key=f"rs_{i}") and len(ej['series']) > 1:
+                st.session_state.lista_ejercicios[i]['series'].pop()
+                st.rerun()
             
             for j, serie in enumerate(ej['series']):
-                cx, cy, cz, cw = st.columns([0.5, 1.5, 1.5, 1.5])
-                cx.markdown(f"<br>**S{j+1}**", unsafe_allow_html=True)
-                serie['peso'] = cy.number_input("kg", key=f"p_{i}_{j}", value=float(serie['peso']), step=0.5)
-                serie['repes'] = cz.number_input("reps", key=f"r_{i}_{j}", value=int(serie['repes']), step=1)
-                est_1rm = calcular_1rm_func(serie['peso'], serie['repes'])
-                cw.metric("Est. 1RM", f"{round(est_1rm, 1)} kg")
+                cx, cy, cz, cw = st.columns([0.5, 2, 2, 2])
+                cx.markdown(f"<br>S{j+1}", unsafe_allow_html=True)
+                
+                # Sincronización inmediata de cada input con st.session_state
+                p_val = cy.number_input("kg", key=f"p_{i}_{j}", value=float(serie['peso']), step=0.5)
+                r_val = cz.number_input("reps", key=f"r_{i}_{j}", value=int(serie['repes']), step=1)
+                
+                st.session_state.lista_ejercicios[i]['series'][j]['peso'] = p_val
+                st.session_state.lista_ejercicios[i]['series'][j]['repes'] = r_val
+                
+                cw.metric("1RM Est.", f"{round(calcular_1rm_func(p_val, r_val), 1)} kg")
 
-    if st.button("💾 GUARDAR SESIÓN", type="primary", use_container_width=True):
-        datos = [{"fecha": str(fecha_entreno), "grupo_muscular": grupo, "ejercicio": e['nombre'], "datos_series": e['series']} for e in st.session_state.lista_ejercicios]
-        supabase.table("registros_gym").insert(datos).execute()
-        st.success("¡Guardado!")
-        st.balloons()
+    st.divider()
+    if st.button("FINALIZAR Y GUARDAR EN NUBE", type="primary", use_container_width=True):
+        if st.session_state.lista_ejercicios and st.session_state.lista_ejercicios[0]['nombre'] != "":
+            datos = [{"fecha": str(fecha_entreno), "grupo_muscular": grupo, "ejercicio": e['nombre'], "datos_series": e['series']} for e in st.session_state.lista_ejercicios]
+            supabase.table("registros_gym").insert(datos).execute()
+            st.success("Sesión almacenada correctamente")
+            st.balloons()
+            st.session_state.lista_ejercicios = [] # Limpieza solo tras guardar con éxito
+            st.rerun()
+        else:
+            st.error("No hay datos válidos para guardar")
 
 # --- PESTAÑA 2: HISTORIAL ---
 with tab2:
-    st.title("📅 Consultar Pasado")
-    fecha_busqueda = st.date_input("Selecciona una fecha:", datetime.now())
+    st.title("Historial de Entrenamientos")
+    fecha_busqueda = st.date_input("Consultar fecha:", datetime.now())
     res_historial = supabase.table("registros_gym").select("*").eq("fecha", str(fecha_busqueda)).execute()
+    
     if res_historial.data:
         df_hist = pd.DataFrame(res_historial.data)
-        st.subheader(f"Entrenamiento: {df_hist['grupo_muscular'].iloc[0]}")
+        st.info(f"Sesión: {df_hist['grupo_muscular'].iloc[0]}")
         for _, fila in df_hist.iterrows():
-            st.markdown(f"### 🔘 {fila['ejercicio'].upper()}")
+            st.subheader(fila['ejercicio'].upper())
             cols = st.columns(len(fila['datos_series']))
             for idx, s in enumerate(fila['datos_series']):
-                cols[idx].code(f"S{idx+1}: {s['peso']}kg x {s['repes']}")
+                cols[idx].metric(f"Serie {idx+1}", f"{s['peso']}kg", f"{s['repes']} reps", delta_color="off")
             st.divider()
+    else:
+        st.write("No hay registros para esta fecha.")
 
 # --- PESTAÑA 3: EVOLUCIÓN ---
 with tab3:
-    st.title("📈 Evolución Real")
+    st.title("Análisis de Progreso")
     res_graf = supabase.table("registros_gym").select("*").order("fecha").execute()
+    
     if res_graf.data:
         df_todo = pd.DataFrame(res_graf.data)
-        sel_ej = st.selectbox("Elige ejercicio:", df_todo['ejercicio'].unique(), key="sel_grafica")
+        df_todo['ejercicio'] = df_todo['ejercicio'].str.upper()
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            grupos = sorted(df_todo['grupo_muscular'].unique())
+            sel_grupo = st.selectbox("Filtrar por grupo:", grupos)
+        with col_b:
+            ejercicios = sorted(df_todo[df_todo['grupo_muscular'] == sel_grupo]['ejercicio'].unique())
+            sel_ej = st.selectbox("Seleccionar ejercicio:", ejercicios)
+        
         df_ejercicio = df_todo[df_todo['ejercicio'] == sel_ej].copy()
         df_ejercicio['fecha'] = pd.to_datetime(df_ejercicio['fecha'])
         
-        def datos_progresion(lista_series):
-            if not lista_series: return 0, 0
-            mejor_serie = max(lista_series, key=lambda x: float(x['peso']))
-            return float(mejor_serie['peso']), int(mejor_serie['repes'])
+        def procesar_volumen(lista_series):
+            if not lista_series: return 0.0, 0
+            pesos = [float(s['peso']) for s in lista_series]
+            repes = [int(s['repes']) for s in lista_series]
+            return max(pesos), sum(repes) # Suma total de repeticiones de todas las series
         
-        df_ejercicio[['peso_max', 'repes_max']] = df_ejercicio['datos_series'].apply(lambda x: pd.Series(datos_progresion(x)))
+        df_ejercicio[['peso_max', 'repes_totales']] = df_ejercicio['datos_series'].apply(lambda x: pd.Series(procesar_volumen(x)))
+        
         fig = make_subplots(specs=[[{"secondary_y": True}]])
-        fig.add_trace(go.Bar(x=df_ejercicio['fecha'], y=df_ejercicio['peso_max'], name="Peso (kg)", marker_color='rgba(255, 75, 75, 0.6)'), secondary_y=False)
-        fig.add_trace(go.Scatter(x=df_ejercicio['fecha'], y=df_ejercicio['repes_max'], name="Repeticiones", mode='lines+markers', line=dict(color='#00ff00', width=3)), secondary_y=True)
-        st.plotly_chart(fig, use_container_width=True)
-
-# --- PESTAÑA 4: COACH IA (LLAMA 3) ---
-with tab4:
-    st.title("🤖 Coach IA con Llama 3")
-    st.write("Analizando tus progresos con la potencia de Llama 3 (Groq).")
-
-    if st.button("🔍 Analizar mi progresión con Llama"):
-        res = supabase.table("registros_gym").select("*").order("fecha", desc=True).limit(50).execute()
+        fig.add_trace(go.Bar(x=df_ejercicio['fecha'], y=df_ejercicio['peso_max'], name="Carga Máxima (kg)", marker_color='#4a90e2'), secondary_y=False)
+        fig.add_trace(go.Scatter(x=df_ejercicio['fecha'], y=df_ejercicio['repes_totales'], name="Volumen Total (Reps)", line=dict(color='#2ecc71', width=3)), secondary_y=True)
         
+        fig.update_layout(template="plotly_dark", hovermode="x unified", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.write("Datos insuficientes para generar gráficas.")
+
+# --- PESTAÑA 4: COACH IA ---
+with tab4:
+    st.title("Asistente de Rendimiento")
+    if st.button("Generar Informe Técnico", use_container_width=True):
+        res = supabase.table("registros_gym").select("*").order("fecha", desc=True).limit(30).execute()
         if res.data:
-            with st.spinner("Llama 3 está analizando tus series..."):
-                contexto_entrenos = str(res.data)
-                prompt = f"""
-                Analiza estos entrenos: {contexto_entrenos}
-                Dame un informe ultra-conciso (máximo 150 palabras).
-                Usa puntos clave (bullet points).
-                Dime: 
-                1. Ejercicio estancado.
-                2. Recomendación de peso para la próxima vez.
-                3. Un consejo técnico rápido.
-                Sé directo, estilo coach de competición.
-                """
-                respuesta = generar_respuesta_llama(prompt)
-                st.markdown("### 📋 Informe de Llama Coach:")
-                st.write(respuesta)
+            with st.spinner("Analizando métricas con Llama 3..."):
+                prompt = f"Analiza estos datos de entrenamiento: {str(res.data)}. Da consejos técnicos muy directos y breves (máximo 3 puntos)."
+                st.info(generar_respuesta_llama(prompt))
         else:
-            st.warning("No hay suficientes datos en la base de datos.")
+            st.warning("No hay suficientes datos registrados.")
+
+# --- PESTAÑA 5: MACROS CON GEMINI ---
+with tab5:
+    st.title("Analizador de Comida")
+    if 'm_temp' not in st.session_state:
+        st.session_state.m_temp = {"al": "", "k": 0.0, "p": 0.0, "c": 0.0, "g": 0.0}
+
+    foto = st.camera_input("Saca foto a tu plato")
+    if foto and st.button("🔍 ANALIZAR CON GEMINI"):
+        with st.spinner("Leyendo plato..."):
+            res = analizar_plato_gemini(foto)
+            try:
+                d = json.loads(res)
+                st.session_state.m_temp = {"al": d['alimento'], "k": d['calorias'], "p": d['proteinas'], "c": d['carbohidratos'], "g": d['grasas']}
+            except: st.error("Error al procesar imagen")
+
+    st.divider()
+    c1, c2 = st.columns(2)
+    al = c1.text_input("Alimento", value=st.session_state.m_temp["al"]).upper()
+    kcal = c1.number_input("kcal", value=float(st.session_state.m_temp["k"]))
+    p = c2.number_input("Proteína (g)", value=float(st.session_state.m_temp["p"]))
+    c = c2.number_input("Carbs (g)", value=float(st.session_state.m_temp["c"]))
+    g = c2.number_input("Grasas (g)", value=float(st.session_state.m_temp["g"]))
+
+    if st.button("🍎 GUARDAR MACROS", type="primary"):
+        supabase.table("nutricion_gym").insert({"alimento": al, "calorias": kcal, "proteinas": p, "carbohidratos": c, "grasas": g}).execute()
+        st.session_state.m_temp = {"al": "", "k": 0.0, "p": 0.0, "c": 0.0, "g": 0.0}
+        st.success("Nutrición registrada"); st.rerun()
+
+# (Las pestañas de HISTORIAL y COACH IA se mantienen con tu lógica anterior)
