@@ -31,11 +31,28 @@ st.markdown("""
 # --- FUNCIONES DE APOYO ---
 def obtener_ultimo_entreno(grupo_muscular):
     try:
-        response = supabase.table("registros_gym").select("*").eq("grupo_muscular", grupo_muscular).order("fecha", desc=True).limit(15).execute()
+        response = supabase.table("registros_gym").select("*").eq("grupo_muscular", grupo_muscular).order("fecha", desc=True).limit(20).execute()
         if response.data:
             df = pd.DataFrame(response.data)
             ultima_fecha = df['fecha'].max()
-            ultimos = df[df['fecha'] == ultima_fecha]
+            ultimos = df[df['fecha'] == ultima_fecha].copy()
+
+            # --- APLICAMOS TU ORDEN AQUÍ TAMBIÉN ---
+            def asignar_prioridad_local(nombre_ej):
+                nombre = nombre_ej.upper()
+                if any(x in nombre for x in ["JALÓN", "REMO", "DOMINADAS", "PESO MUERTO", "PRESS", "SENTADILLA", "PRENSA", "PECK DECK", "APERTURAS"]):
+                    return 1
+                if any(x in nombre for x in ["ELEVACIONES", "MILITAR", "POSTERIOR", "LATERALES"]):
+                    return 2
+                if any(x in nombre for x in ["TRÍCEPS", "EXTENSION"]):
+                    return 3
+                if any(x in nombre for x in ["CURL","BÍCEPS", "MARTILLO", "BAYESIAN"]):
+                    return 4
+                return 5
+
+            ultimos['prio'] = ultimos['ejercicio'].apply(asignar_prioridad_local)
+            ultimos = ultimos.sort_values(by='prio')
+            
             return [{"nombre": f['ejercicio'].upper(), "series": f['datos_series']} for _, f in ultimos.iterrows()]
     except: pass
     return []
@@ -161,8 +178,8 @@ with tab1:
             st.rerun()
         else:
             st.error("No hay datos válidos para guardar")
-
-# --- PESTAÑA 2: HISTORIAL ---
+            
+# --- PESTAÑA 2: HISTORIAL (CORREGIDA Y ORDENADA) ---
 with tab2:
     st.title("Historial de Entrenamientos")
     fecha_busqueda = st.date_input("Consultar fecha:", datetime.now())
@@ -170,16 +187,65 @@ with tab2:
     
     if res_historial.data:
         df_hist = pd.DataFrame(res_historial.data)
-        st.info(f"Sesión: {df_hist['grupo_muscular'].iloc[0]}")
-        for _, fila in df_hist.iterrows():
-            st.subheader(fila['ejercicio'].upper())
-            cols = st.columns(len(fila['datos_series']))
-            for idx, s in enumerate(fila['datos_series']):
-                cols[idx].metric(f"Serie {idx+1}", f"{s['peso']}kg", f"{s['repes']} reps", delta_color="off")
-            st.divider()
-    else:
-        st.write("No hay registros para esta fecha.")
+        
+        # 1. FUNCIÓN DE PRIORIDAD (Tu lógica actualizada)
+        def asignar_prioridad(nombre_ej):
+            nombre = nombre_ej.upper()
+            if any(x in nombre for x in ["PRESS","PECK DECK", "APERTURAS","DOMINADAS","JALÓN", "REMO","PESO MUERTO","SENTADILLA", "PRENSA"]):
+                return 1
+            if any(x in nombre for x in ["ELEVACIONES", "MILITAR", "POSTERIOR", "LATERALES"]):
+                return 2
+            if any(x in nombre for x in ["FONDOS","TRÍCEPS", "EXTENSION"]):
+                return 3
+            if any(x in nombre for x in ["PREDICADOR","CURL","BÍCEPS", "MARTILLO", "BAYESIAN"]):
+                return 4
+            return 5
 
+        # IMPORTANTE: Aplicamos el orden al DataFrame antes de CUALQUIER otra cosa
+        df_hist['prioridad'] = df_hist['ejercicio'].apply(asignar_prioridad)
+        df_hist = df_hist.sort_values(by=['prioridad', 'ejercicio']) # Ordena por prioridad y luego alfabético
+
+        # 2. CONSTRUIR EL TEXTO DE COPIA (ESTILO NOTAS)
+        grupo_nombre = df_hist['grupo_muscular'].iloc[0]
+        fecha_txt = fecha_busqueda.strftime("%d/%m/%y")
+        resumen_txt = f"{grupo_nombre} — {fecha_txt}\n"
+        
+        ultima_prioridad = 0
+        for _, fila in df_hist.iterrows():
+            prio_actual = fila['prioridad']
+            # Añadimos cabeceras de sección al texto de copia
+            if prio_actual != ultima_prioridad:
+                if prio_actual == 1: resumen_txt += "\n--- BLOQUE PRINCIPAL ---\n"
+                elif prio_actual == 2: resumen_txt += "\n--- HOMBRO ---\n"
+                elif prio_actual == 3: resumen_txt += "\n--- TRÍCEPS ---\n"
+                elif prio_actual == 4: resumen_txt += "\n--- BÍCEPS ---\n"
+                ultima_prioridad = prio_actual
+
+            ej_nombre = fila['ejercicio'].upper()
+            series = fila['datos_series']
+            peso_ref = series[0]['peso']
+            
+            resumen_txt += f"\n{ej_nombre} ({peso_ref} kg)\n"
+            repes_linea = " - ".join([str(s['repes']) for s in series])
+            resumen_txt += f"{repes_linea}\n"
+
+        # 3. MOSTRAR INTERFAZ
+        st.subheader("📋 Resumen para Notas")
+        st.code(resumen_txt, language="text")
+        
+        st.divider()
+        
+        # 4. VISTA DETALLADA (Ahora también saldrá ordenada)
+        st.subheader("Detalle del Entrenamiento")
+        for _, fila in df_hist.iterrows():
+            with st.container():
+                st.markdown(f"### {fila['ejercicio'].upper()}")
+                cols = st.columns(len(fila['datos_series']))
+                for idx, s in enumerate(fila['datos_series']):
+                    cols[idx].metric(f"Serie {idx+1}", f"{s['peso']}kg", f"{s['repes']} reps")
+                st.write("") # Espacio entre ejercicios
+    else:
+        st.info("No hay registros para este día.")
 # --- PESTAÑA 3: EVOLUCIÓN ---
 with tab3:
     st.title("Análisis de Progreso")
