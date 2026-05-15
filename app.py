@@ -56,28 +56,33 @@ def generar_respuesta_llama(prompt):
     
 def analizar_plato_gemini(foto_archivo):
     try:
-        # 1. Configurar el modelo de visión
         model = genai.GenerativeModel('gemini-1.5-flash')
-        
-        # 2. Convertir la foto a bytes
         image_data = foto_archivo.getvalue()
-        image_parts = [{"mime_type": "image/jpeg", "data": image_data}]
+        
+        # Formato correcto para Gemini 1.5
+        image_parts = [
+            {"mime_type": "image/jpeg", "data": image_data}
+        ]
 
-        # 3. El "Prompt" maestro para que la IA no se enrolle
         prompt = """
         Analiza esta imagen de comida. Estima las cantidades y devuelve EXCLUSIVAMENTE 
         un objeto JSON con este formato:
         {"alimento": "nombre del plato", "calorias": 0, "proteinas": 0, "carbohidratos": 0, "grasas": 0}
-        Si hay varios alimentos, suma sus macros. No escribas nada más que el JSON.
+        No escribas nada más que el JSON, sin bloques de código ni explicaciones.
         """
 
         response = model.generate_content([prompt, image_parts[0]])
         
-        # 4. Limpiar la respuesta (Gemini a veces pone ```json ... ```)
-        texto_limpio = response.text.replace('```json', '').replace('```', '').strip()
-        return texto_limpio
+        # LIMPIEZA AVANZADA: Quitamos posibles bloques de código Markdown
+        texto = response.text
+        if "```json" in texto:
+            texto = texto.split("```json")[1].split("```")[0]
+        elif "```" in texto:
+            texto = texto.split("```")[1].split("```")[0]
+        
+        return texto.strip()
     except Exception as e:
-        return f"Error con Gemini: {e}"
+        return f"Error con Gemini: {str(e)}"
 
 # --- ESTRUCTURA DE PESTAÑAS ---
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["REGISTRAR", "HISTORIAL", "EVOLUCIÓN", "COACH IA", "MACROS"])
@@ -234,10 +239,22 @@ with tab5:
     if foto and st.button("🔍 ANALIZAR CON GEMINI"):
         with st.spinner("Leyendo plato..."):
             res = analizar_plato_gemini(foto)
-            try:
-                d = json.loads(res)
-                st.session_state.m_temp = {"al": d['alimento'], "k": d['calorias'], "p": d['proteinas'], "c": d['carbohidratos'], "g": d['grasas']}
-            except: st.error("Error al procesar imagen")
+            # Si la función devuelve un mensaje de Error, lo mostramos
+            if "Error" in res:
+                st.error(res)
+            else:
+                try:
+                    d = json.loads(res)
+                    st.session_state.m_temp = {
+                        "al": d.get('alimento', ''), 
+                        "k": d.get('calorias', 0), 
+                        "p": d.get('proteinas', 0), 
+                        "c": d.get('carbohidratos', 0), 
+                        "g": d.get('grasas', 0)
+                    }
+                    st.rerun() # Forzamos recarga para ver los datos en los inputs
+                except Exception as e: 
+                    st.error(f"La IA devolvió un formato extraño: {res}")
 
     st.divider()
     c1, c2 = st.columns(2)
