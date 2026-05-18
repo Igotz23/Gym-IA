@@ -73,24 +73,37 @@ def generar_respuesta_llama(prompt):
     
 def analizar_plato_gemini(foto_archivo):
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        image_data = foto_archivo.getvalue()
+        # Usamos el modelo actualizado y estable
+        model = genai.GenerativeModel('gemini-2.5-flash')
         
-        # Formato correcto para Gemini 1.5
-        image_parts = [
-            {"mime_type": "image/jpeg", "data": image_data}
-        ]
+        image_data = foto_archivo.getvalue()
+        image_parts = [{"mime_type": "image/jpeg", "data": image_data}]
 
         prompt = """
-        Analiza esta imagen de comida. Estima las cantidades y devuelve EXCLUSIVAMENTE 
-        un objeto JSON con este formato:
-        {"alimento": "nombre del plato", "calorias": 0, "proteinas": 0, "carbohidratos": 0, "grasas": 0}
-        No escribas nada más que el JSON, sin bloques de código ni explicaciones.
+      Analiza esta imagen de comida con extrema precisión, actuando como un nutricionista clínico experto en estimación visual de porciones.
+        
+        INSTRUCCIONES CRÍTICAS DE ESTIMACIÓN:
+        1. Identifica los ingredientes principales visiblemente presentes.
+        2. Estima el VOLUMEN en ml o cm³ de la comida basándote en la referencia del recipiente (tupper, plato) y los cubiertos. No asumas raciones de restaurante.
+        3. Aplica densidad nutricional estándar para alimentos cocidos. Por ejemplo: para pasta cocida, estima la cantidad que cabe en ese volumen y calcula sus macros específicos (aprox. 1.3g carbs por g de pasta cocida).
+        4. Si hay salsa, estima su volumen y composición por separado (ej. salsa de tomate: base agua, bajos macros vs salsa carbonara: alta grasa).
+        5. SUMA las estimaciones de todos los ingredientes para el total del plato.
+
+        FORMATO DE SALIDA (EXCLUSIVAMENTE JSON Raw, sin bloques de código ```):
+        {
+          "alimento": "nombre descriptivo y corto del plato",
+          "calorias": 0.0,
+          "proteinas": 0.0,
+          "carbohidratos": 0.0,
+          "grasas": 0.0
+        }
+
+        Regla de oro: Es preferible una estimación conservadora basada en el volumen visible que una estimación inflada basada en 'raciones tipo'.
         """
 
         response = model.generate_content([prompt, image_parts[0]])
         
-        # LIMPIEZA AVANZADA: Quitamos posibles bloques de código Markdown
+        # Limpieza por si acaso devuelve bloques markdown
         texto = response.text
         if "```json" in texto:
             texto = texto.split("```json")[1].split("```")[0]
@@ -100,7 +113,6 @@ def analizar_plato_gemini(foto_archivo):
         return texto.strip()
     except Exception as e:
         return f"Error con Gemini: {str(e)}"
-
 # --- ESTRUCTURA DE PESTAÑAS ---
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["REGISTRAR", "HISTORIAL", "EVOLUCIÓN", "COACH IA", "MACROS"])
 
@@ -282,47 +294,144 @@ with tab3:
         st.plotly_chart(fig, use_container_width=True)
     else:
         st.write("Datos insuficientes para generar gráficas.")
-
-# --- PESTAÑA 4: COACH IA ---
+# --- PESTAÑA 4: COACH IA (REPARADO Y ULTRA-PRECISO) ---
 with tab4:
-    st.title("Asistente de Rendimiento")
-    if st.button("Generar Informe Técnico", use_container_width=True):
-        res = supabase.table("registros_gym").select("*").order("fecha", desc=True).limit(30).execute()
+    st.title("Asistente de Rendimiento Pro")
+    if st.button("📊 Analizar Sobrecarga Progresiva", use_container_width=True):
+        # Traemos los últimos 100 registros
+        res = supabase.table("registros_gym").select("*").order("fecha", desc=True).limit(100).execute()
+        
         if res.data:
-            with st.spinner("Analizando métricas con Llama 3..."):
-                prompt = f"Analiza estos datos de entrenamiento: {str(res.data)}. Da consejos técnicos muy directos y breves (máximo 3 puntos)."
+            with st.spinner("Analizando la tendencia de tus cargas..."):
+                
+                # --- LIMPIEZA DE DATOS PREVIA ---
+                # Pasamos solo la información limpia para que la IA no se confunda con IDs técnicos
+                datos_limpios = []
+                for r in res.data:
+                    datos_limpios.append({
+                        "fecha": r.get("fecha"),
+                        "ejercicio": r.get("ejercicio", "").upper(),
+                        "series_y_repes": r.get("datos_series")
+                    })
+                
+                # El prompt ahora es ultra-estricto con la cronología y el formato
+                prompt = f"""
+                Actúa como un entrenador de fuerza de élite, experto en sobrecarga progresiva.
+                Analiza esta lista de entrenamientos ordenados cronológicamente desde el más reciente al más antiguo: {str(datos_limpios)}.
+                
+                CRÍTICO PARA EL ANÁLISIS:
+                - La primera aparición de un ejercicio en la lista es su nivel ACTUAL (lo más reciente). Compara esto con sus apariciones posteriores (pasadas).
+                - Si en la última sesión el usuario subió los kg o las repeticiones respecto a las anteriores, eso es PROGRESO, jamás lo listes como estancamiento.
+                - Solo hay estancamiento si en las últimas 3 o 4 veces que hizo el ejercicio, los kg y las repeticiones se mantuvieron exactamente iguales.
+
+                REGLAS DE FORMATO:
+                - Prohibido usar IDs, números de ejercicio, contraseñas o textos técnicos de bases de datos.
+                - Nombra los ejercicios tal cual los escribe el usuario.
+                - Ve al grano, usa frases cortas y motivadoras.
+
+                Estructura tu respuesta EXACTAMENTE así:
+
+                🚨 **ALERTAS DE ESTANCAMIENTO (¡A apretar!):**
+                - [Nombre del ejercicio]: Breve motivo real de por qué lleva congelado varias sesiones.
+
+                🔥 **OPORTUNIDADES DE SUBIR CARGA (A por ello):**
+                - [Nombre del ejercicio]: Breve motivo de por qué sus últimas series indican que ya tolera más peso.
+
+                💡 **CONSEJO TÁCTICO CORTO:**
+                - Un consejo práctico de una sola línea adaptado a lo que ves en sus datos.
+                """
+                
+                st.markdown("### 📋 Informe Técnico del Coach")
                 st.info(generar_respuesta_llama(prompt))
         else:
-            st.warning("No hay suficientes datos registrados.")
-
-# --- PESTAÑA 5: MACROS CON GEMINI ---
+            st.warning("No hay suficientes datos registrados en la nube para analizar tu progresión.")
+# --- PESTAÑA 5: MACROS CON GEMINI, TEXTO Y OBJETIVOS (BLOQUE COMPLETO) ---
 with tab5:
-    st.title("Analizador de Comida")
+    st.title("Diario de Nutrición Inteligente")
+    
+    # 1. CONFIGURACIÓN DE OBJETIVOS (Se guardan en la sesión)
+    if 'obj_kcal' not in st.session_state: st.session_state.obj_kcal = 2500.0
+    if 'obj_p' not in st.session_state: st.session_state.obj_p = 150.0
+    if 'obj_c' not in st.session_state: st.session_state.obj_c = 250.0
+    if 'obj_g' not in st.session_state: st.session_state.obj_g = 70.0
+
+    with st.expander("⚙️ Configurar Mis Objetivos Diarios"):
+        c_obj1, c_obj2, c_obj3, c_obj4 = st.columns(4)
+        st.session_state.obj_kcal = c_obj1.number_input("Objetivo Kcal", value=float(st.session_state.obj_kcal), step=50.0)
+        st.session_state.obj_p = c_obj2.number_input("Objetivo Prot (g)", value=float(st.session_state.obj_p), step=5.0)
+        st.session_state.obj_c = c_obj3.number_input("Objetivo Carbs (g)", value=float(st.session_state.obj_c), step=5.0)
+        st.session_state.obj_g = c_obj4.number_input("Objetivo Grasas (g)", value=float(st.session_state.obj_g), step=5.0)
+
+    st.divider()
+
+    # 2. ENTRADA DE DATOS (FOTO O TEXTO MANUAL)
     if 'm_temp' not in st.session_state:
         st.session_state.m_temp = {"al": "", "k": 0.0, "p": 0.0, "c": 0.0, "g": 0.0}
 
-    foto = st.camera_input("Saca foto a tu plato")
-    if foto and st.button("🔍 ANALIZAR CON GEMINI"):
-        with st.spinner("Leyendo plato..."):
-            res = analizar_plato_gemini(foto)
-            # Si la función devuelve un mensaje de Error, lo mostramos
-            if "Error" in res:
-                st.error(res)
-            else:
-                try:
-                    d = json.loads(res)
-                    st.session_state.m_temp = {
-                        "al": d.get('alimento', ''), 
-                        "k": d.get('calorias', 0), 
-                        "p": d.get('proteinas', 0), 
-                        "c": d.get('carbohidratos', 0), 
-                        "g": d.get('grasas', 0)
-                    }
-                    st.rerun() # Forzamos recarga para ver los datos en los inputs
-                except Exception as e: 
-                    st.error(f"La IA devolvió un formato extraño: {res}")
+    tipo_entrada = st.radio("Método de registro:", ["📷 Usar Foto", "✍️ Escribir a mano (IA)"], horizontal=True)
 
-    st.divider()
+    if tipo_entrada == "📷 Usar Foto":
+        metodo_foto = st.radio("Origen de la imagen:", ["Cámara", "Galería"], horizontal=True)
+        # Soportamos HEIC explícitamente en el file_uploader
+        foto = st.camera_input("Saca foto") if metodo_foto == "Cámara" else st.file_uploader("Sube imagen", type=["jpg", "jpeg", "png", "heic"])
+        
+        if foto:
+            st.image(foto, caption="Plato detectado", use_container_width=True)
+            if st.button("🔍 ANALIZAR FOTO CON GEMINI", use_container_width=True):
+                with st.spinner("Gemini analizando el plato con precisión..."):
+                    res = analizar_plato_gemini(foto)
+                    if "Error" in res: 
+                        st.error(res)
+                    else:
+                        try:
+                            # Limpieza ultra-robusta de marcas de formato de la IA
+                            res_limpio = res.strip()
+                            if res_limpio.startswith("```"):
+                                res_limpio = res_limpio.split("\n", 1)[1].rsplit("\n", 1)[0]
+                            if res_limpio.lower().startswith("json"):
+                                res_limpio = res_limpio.split("json", 1)[1].strip()
+                            
+                            d = json.loads(res_limpio)
+                            
+                            # Forzamos float() para admitir decimales precisos sin romper la app
+                            st.session_state.m_temp = {
+                                "al": str(d.get('alimento', '')).upper(), 
+                                "k": float(d.get('calorias', 0.0)), 
+                                "p": float(d.get('proteinas', 0.0)), 
+                                "c": float(d.get('carbohidratos', 0.0)), 
+                                "g": float(d.get('grasas', 0.0))
+                            }
+                            st.rerun()
+                        except Exception as e: 
+                            st.error(f"Error al procesar el JSON. La IA devolvió: {res}")
+
+    else:
+        texto_comida = st.text_input("Ejemplo: '200gr de macarrones con tomate frito y 150gr de pechuga de pollo'")
+        if texto_comida and st.button("🤖 ESTIMAR MACROS POR TEXTO", use_container_width=True):
+            with st.spinner("Llama 3 calculando macros..."):
+                prompt_texto = f"""
+                Analiza textualmente esta comida: '{texto_comida}'. Estima las cantidades y devuelve EXCLUSIVAMENTE 
+                un objeto JSON con este formato (valores numéricos aproximados):
+                {{"alimento": "resumen corto de lo que comió", "calorias": 0, "proteinas": 0, "carbohidratos": 0, "grasas": 0}}
+                No escribas absolutamente nada más que el JSON raw, sin bloques de código ```json ni texto adicional.
+                """
+                res = generar_respuesta_llama(prompt_texto)
+                try:
+                    res_limpio = res.replace('```json', '').replace('```', '').strip()
+                    d = json.loads(res_limpio)
+                    st.session_state.m_temp = {
+                        "al": str(d.get('alimento', '')).upper(), 
+                        "k": float(d.get('calorias', 0.0)), 
+                        "p": float(d.get('proteinas', 0.0)), 
+                        "c": float(d.get('carbohidratos', 0.0)), 
+                        "g": float(d.get('grasas', 0.0))
+                    }
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error al procesar el texto. La IA respondió: {res}")
+
+    # 3. FORMULARIO DE CONFIRMACIÓN ANTES DE GUARDAR
+    st.subheader("Confirmar Macronutrientes")
     c1, c2 = st.columns(2)
     al = c1.text_input("Alimento", value=st.session_state.m_temp["al"]).upper()
     kcal = c1.number_input("kcal", value=float(st.session_state.m_temp["k"]))
@@ -330,9 +439,49 @@ with tab5:
     c = c2.number_input("Carbs (g)", value=float(st.session_state.m_temp["c"]))
     g = c2.number_input("Grasas (g)", value=float(st.session_state.m_temp["g"]))
 
-    if st.button("🍎 GUARDAR MACROS", type="primary"):
-        supabase.table("nutricion_gym").insert({"alimento": al, "calorias": kcal, "proteinas": p, "carbohidratos": c, "grasas": g}).execute()
+    if st.button("🍎 GUARDAR EN DIARIO", type="primary", use_container_width=True):
+        fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+        supabase.table("nutricion_gym").insert({
+            "alimento": al, "calorias": kcal, "proteinas": p, "carbohidratos": c, "grasas": g, "fecha": fecha_hoy
+        }).execute()
         st.session_state.m_temp = {"al": "", "k": 0.0, "p": 0.0, "c": 0.0, "g": 0.0}
-        st.success("Nutrición registrada"); st.rerun()
+        st.success("Comida añadida al historial de hoy!")
+        st.rerun()
 
-# (Las pestañas de HISTORIAL y COACH IA se mantienen con tu lógica anterior)
+    st.divider()
+
+    # 4. DASHBOARD: TOTALES DEL DÍA VS OBJETIVOS
+    st.subheader("📊 Progreso Diario de Hoy")
+    fecha_hoy_str = datetime.now().strftime("%Y-%m-%d")
+    
+    # Traemos las comidas registradas en la fecha actual
+    res_hoy = supabase.table("nutricion_gym").select("*").eq("fecha", fecha_hoy_str).execute()
+    
+    tot_kcal, tot_p, tot_c, tot_g = 0.0, 0.0, 0.0, 0.0
+    
+    if res_hoy.data:
+        df_hoy = pd.DataFrame(res_hoy.data)
+        tot_kcal = df_hoy['calorias'].sum()
+        tot_p = df_hoy['proteinas'].sum()
+        tot_c = df_hoy['carbohidratos'].sum()
+        tot_g = df_hoy['grasas'].sum()
+
+    # Funciones para calcular lo restante o excesos
+    def txt_delta(actual, objetivo):
+        dif = objetivo - actual
+        return f"{round(dif, 1)}g restantes" if dif >= 0 else f"{round(abs(dif), 1)}g de exceso"
+
+    def txt_delta_kcal(actual, objetivo):
+        dif = objetivo - actual
+        return f"{round(dif, 1)} kcal rest." if dif >= 0 else f"{round(abs(dif), 1)} kcal exc."
+
+    # Renderizado en tarjetas de métricas
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Calorías Totales", f"{round(tot_kcal, 1)} / {st.session_state.obj_kcal}", txt_delta_kcal(tot_kcal, st.session_state.obj_kcal), delta_color="inverse")
+    m2.metric("Proteínas", f"{round(tot_p, 1)}g / {st.session_state.obj_p}g", txt_delta(tot_p, st.session_state.obj_p))
+    m3.metric("Carbohidratos", f"{round(tot_c, 1)}g / {st.session_state.obj_c}g", txt_delta(tot_c, st.session_state.obj_c))
+    m4.metric("Grasas", f"{round(tot_g, 1)}g / {st.session_state.obj_g}g", txt_delta(tot_g, st.session_state.obj_g))
+
+    # Barra visual de carga energética del día
+    pct = min(tot_kcal / max(st.session_state.obj_kcal, 1.0), 1.0)
+    st.progress(pct, text=f"Energía consumida: {round(pct*100, 1)}%")
